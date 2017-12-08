@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -193,6 +193,7 @@ struct UDP_ACCEL
 	UINT64 CreatedTick;									// Object creation time
 	bool FastDetect;									// Fast disconnection detection mode
 	UINT64 FirstStableReceiveTick;						// Start time of current stable continued receivable period
+	bool UseSuperRelayQuery;							// Use the super relay query
 	bool UseUdpIpQuery;									// Use the self IP address query by UDP
 	IP UdpIpQueryHost;									// Host for the self IP address query by UDP
 	UINT UdpIpQueryPort;								// Port number for self IP address for query by UDP
@@ -219,7 +220,3 @@ void NatT_GetIpThread(THREAD *thread, void *param);
 #endif	// UDPACCEL_H
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

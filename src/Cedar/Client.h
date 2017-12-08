@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -503,6 +503,7 @@ struct CLIENT
 	bool NoSaveLog;							// Do not save the log
 	bool NoSaveConfig;						// Do not save the settings
 	INTERNET_SETTING CommonProxySetting;	// Common proxy settings
+	void *MsSuspendHandler;					// MS suspend handler
 
 };
 
@@ -797,7 +798,7 @@ bool CiEraseSensitiveInAccount(BUF *b);
 bool CiHasAccountSensitiveInformation(BUF *b);
 bool CiHasAccountSensitiveInformationFile(wchar_t *name);
 void CiApplyInnerVPNServerConfig(CLIENT *c);
-SERVER *CiNewInnerVPNServer(CLIENT *c);
+SERVER *CiNewInnerVPNServer(CLIENT *c, bool relay_server);
 void CiFreeInnerVPNServer(CLIENT *c, SERVER *s);
 void CiIncrementNumActiveSessions();
 void CiDecrementNumActiveSessions();
@@ -877,7 +878,3 @@ void CiInitDriverVerStruct(MS_DRIVER_VER *ver);
 #endif	// CLIENT_H
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

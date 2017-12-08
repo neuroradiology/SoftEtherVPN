@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -148,6 +148,11 @@
 // Threshold number of registered items in the transmission queue for suppressing the L2TP Hello transmission
 #define	L2TP_HELLO_SUPRESS_MAX_THRETHORD_NUM_SEND_QUEUE		32
 
+// Quota
+#define	L2TP_QUOTA_MAX_NUM_TUNNELS_PER_IP		1000			// Number of L2TP sessions per IP address
+#define	L2TP_QUOTA_MAX_NUM_TUNNELS				30000			// Limit of the number of sessions
+#define	L2TP_QUOTA_MAX_NUM_SESSIONS_PER_TUNNEL	1024		// Max sessions in a tunnel
+
 // L2TP window size
 #define	L2TP_WINDOW_SIZE				16
 
@@ -184,6 +189,7 @@
 #define	L2TP_AVP_TYPE_V3_SESSION_ID_LOCAL	63	// Local Session ID
 #define	L2TP_AVP_TYPE_V3_SESSION_ID_REMOTE	64	// Remote Session ID
 #define	L2TP_AVP_TYPE_V3_PW_TYPE		68		// Pseudowire Type
+#define	L2TP_AVP_TYPE_V3_CIRCUIT_STATUS	71
 
 // Message Type value
 #define	L2TP_MESSAGE_TYPE_SCCRQ			1		// Start-Control-Connection-Request
@@ -242,6 +248,7 @@ struct L2TP_PACKET
 	bool HasOffset;								// Whether there is offset bit
 	bool IsPriority;							// Whether priority packet
 	bool IsZLB;									// Zero Length Bit
+	bool IsYamahaV3;							// L2TPv3 on YAMAHA
 	UINT Ver;									// Version
 	UINT Length;								// Length
 	UINT TunnelId;								// Tunnel ID
@@ -279,6 +286,7 @@ struct L2TP_TUNNEL
 {
 	bool IsV3;									// L2TPv3
 	bool IsCiscoV3;								// L2TPv3 for Cisco
+	bool IsYamahaV3;							// L2TPv3 for YAMAHA
 	IP ClientIp;								// Client IP address
 	UINT ClientPort;							// Client port number
 	IP ServerIp;								// Server IP address
@@ -328,12 +336,13 @@ struct L2TP_SERVER
 //// Function prototype
 L2TP_SERVER *NewL2TPServer(CEDAR *cedar);
 L2TP_SERVER *NewL2TPServerEx(CEDAR *cedar, IKE_SERVER *ike, bool is_ipv6, UINT crypt_block_size);
+UINT GetNumL2TPTunnelsByClientIP(L2TP_SERVER *l2tp, IP *client_ip);
 void SetL2TPServerSockEvent(L2TP_SERVER *l2tp, SOCK_EVENT *e);
 void FreeL2TPServer(L2TP_SERVER *l2tp);
 void StopL2TPServer(L2TP_SERVER *l2tp, bool no_wait);
 void ProcL2TPPacketRecv(L2TP_SERVER *l2tp, UDPPACKET *p);
 L2TP_PACKET *ParseL2TPPacket(UDPPACKET *p);
-BUF *BuildL2TPPacketData(L2TP_PACKET *pp);
+BUF *BuildL2TPPacketData(L2TP_PACKET *pp, L2TP_TUNNEL *t);
 L2TP_AVP *GetAVPValue(L2TP_PACKET *p, UINT type);
 L2TP_AVP *GetAVPValueEx(L2TP_PACKET *p, UINT type, UINT vendor_id);
 L2TP_TUNNEL *NewL2TPTunnel(L2TP_SERVER *l2tp, L2TP_PACKET *p, UDPPACKET *udp);
@@ -342,6 +351,7 @@ UINT GenerateNewTunnelIdEx(L2TP_SERVER *l2tp, IP *client_ip, bool is_32bit);
 void FreeL2TPTunnel(L2TP_TUNNEL *t);
 L2TP_TUNNEL *GetTunnelFromId(L2TP_SERVER *l2tp, IP *client_ip, UINT tunnel_id, bool is_v3);
 L2TP_TUNNEL *GetTunnelFromIdOfAssignedByClient(L2TP_SERVER *l2tp, IP *client_ip, UINT tunnel_id);
+L2TP_TUNNEL *GetTunnelFromIdOfAssignedByClientEx(L2TP_SERVER *l2tp, IP *client_ip, UINT tunnel_id, bool is_v3);
 void SendL2TPControlPacket(L2TP_SERVER *l2tp, L2TP_TUNNEL *t, UINT session_id, L2TP_PACKET *p);
 void SendL2TPControlPacketMain(L2TP_SERVER *l2tp, L2TP_TUNNEL *t, L2TP_QUEUE *q);
 void SendL2TPDataPacket(L2TP_SERVER *l2tp, L2TP_TUNNEL *t, L2TP_SESSION *s, void *data, UINT size);
@@ -371,7 +381,3 @@ void L2TPSessionManageEtherIPServer(L2TP_SERVER *l2tp, L2TP_SESSION *s);
 #endif	// IPSEC_L2TP_H
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

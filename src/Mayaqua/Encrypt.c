@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Mayaqua Kernel
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -156,6 +156,8 @@ UINT ssl_lock_num;
 static bool openssl_inited = false;
 static bool is_intel_aes_supported = false;
 
+static unsigned char *Internal_SHA0(const unsigned char *d, size_t n, unsigned char *md);
+
 // For the callback function
 typedef struct CB_PARAM
 {
@@ -163,52 +165,64 @@ typedef struct CB_PARAM
 } CB_PARAM;
 
 // Copied from t1_enc.c of OpenSSL
-#define HMAC_Init_ex(ctx,sec,len,md,impl) HMAC_Init(ctx, sec, len, md) 
-#define HMAC_CTX_cleanup(ctx)             HMAC_cleanup(ctx)
 void Enc_tls1_P_hash(const EVP_MD *md, const unsigned char *sec, int sec_len,
 				 const unsigned char *seed, int seed_len, unsigned char *out, int olen)
 {
 	int chunk,n;
 	unsigned int j;
-	HMAC_CTX ctx;
-	HMAC_CTX ctx_tmp;
+	HMAC_CTX *ctx;
+	HMAC_CTX *ctx_tmp;
 	unsigned char A1[EVP_MAX_MD_SIZE];
 	unsigned int A1_len;
 
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	ctx = HMAC_CTX_new();
+	ctx_tmp = HMAC_CTX_new();
+#else
+	HMAC_CTX ctx_;
+	HMAC_CTX ctx_tmp_;
+	ctx = &ctx_;
+	ctx_tmp = &ctx_tmp_;
+	Zero(ctx, sizeof(HMAC_CTX));
+	Zero(ctx_tmp, sizeof(HMAC_CTX));
+#endif
 	chunk=EVP_MD_size(md);
 
-	Zero(&ctx, sizeof(ctx));
-	Zero(&ctx_tmp, sizeof(ctx_tmp));
-	HMAC_Init_ex(&ctx,sec,sec_len,md, NULL);
-	HMAC_Init_ex(&ctx_tmp,sec,sec_len,md, NULL);
-	HMAC_Update(&ctx,seed,seed_len);
-	HMAC_Final(&ctx,A1,&A1_len);
+	HMAC_Init_ex(ctx,sec,sec_len,md, NULL);
+	HMAC_Init_ex(ctx_tmp,sec,sec_len,md, NULL);
+	HMAC_Update(ctx,seed,seed_len);
+	HMAC_Final(ctx,A1,&A1_len);
 
 	n=0;
 	for (;;)
 	{
-		HMAC_Init_ex(&ctx,NULL,0,NULL,NULL); /* re-init */
-		HMAC_Init_ex(&ctx_tmp,NULL,0,NULL,NULL); /* re-init */
-		HMAC_Update(&ctx,A1,A1_len);
-		HMAC_Update(&ctx_tmp,A1,A1_len);
-		HMAC_Update(&ctx,seed,seed_len);
+		HMAC_Init_ex(ctx,NULL,0,NULL,NULL); /* re-init */
+		HMAC_Init_ex(ctx_tmp,NULL,0,NULL,NULL); /* re-init */
+		HMAC_Update(ctx,A1,A1_len);
+		HMAC_Update(ctx_tmp,A1,A1_len);
+		HMAC_Update(ctx,seed,seed_len);
 
 		if (olen > chunk)
 		{
-			HMAC_Final(&ctx,out,&j);
+			HMAC_Final(ctx,out,&j);
 			out+=j;
 			olen-=j;
-			HMAC_Final(&ctx_tmp,A1,&A1_len); /* calc the next A1 value */
+			HMAC_Final(ctx_tmp,A1,&A1_len); /* calc the next A1 value */
 		}
 		else	/* last one */
 		{
-			HMAC_Final(&ctx,A1,&A1_len);
+			HMAC_Final(ctx,A1,&A1_len);
 			memcpy(out,A1,olen);
 			break;
 		}
 	}
-	HMAC_CTX_cleanup(&ctx);
-	HMAC_CTX_cleanup(&ctx_tmp);
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	HMAC_CTX_free(ctx);
+	HMAC_CTX_free(ctx_tmp);
+#else
+	HMAC_CTX_cleanup(ctx);
+	HMAC_CTX_cleanup(ctx_tmp);
+#endif
 	Zero (A1, sizeof(A1));
 }
 
@@ -237,6 +251,74 @@ void Enc_tls1_PRF(unsigned char *label, int label_len, const unsigned char *sec,
 
 	memset (out2, 0, olen);
 	Free(out2);
+}
+
+// Easy encryption
+BUF *EasyEncrypt(BUF *src_buf)
+{
+	UCHAR key[SHA1_SIZE];
+	BUF *tmp_data;
+	CRYPT *rc4;
+	BUF *ret;
+	// Validate arguments
+	if (src_buf == NULL)
+	{
+		return NULL;
+	}
+
+	Rand(key, SHA1_SIZE);
+
+	tmp_data = CloneBuf(src_buf);
+
+	rc4 = NewCrypt(key, SHA1_SIZE);
+
+	Encrypt(rc4, tmp_data->Buf, tmp_data->Buf, tmp_data->Size);
+
+	ret = NewBuf();
+
+	WriteBuf(ret, key, SHA1_SIZE);
+	WriteBufBuf(ret, tmp_data);
+
+	FreeCrypt(rc4);
+	FreeBuf(tmp_data);
+
+	SeekBufToBegin(ret);
+
+	return ret;
+}
+
+// Easy decryption
+BUF *EasyDecrypt(BUF *src_buf)
+{
+	UCHAR key[SHA1_SIZE];
+	BUF *tmp_buf;
+	CRYPT *rc4;
+	// Validate arguments
+	if (src_buf == NULL)
+	{
+		return NULL;
+	}
+
+	SeekBufToBegin(src_buf);
+
+	if (ReadBuf(src_buf, key, SHA1_SIZE) != SHA1_SIZE)
+	{
+		return NULL;
+	}
+
+	tmp_buf = ReadRemainBuf(src_buf);
+	if (tmp_buf == NULL)
+	{
+		return NULL;
+	}
+
+	rc4 = NewCrypt(key, SHA1_SIZE);
+	Encrypt(rc4, tmp_buf->Buf, tmp_buf->Buf, tmp_buf->Size);
+	FreeCrypt(rc4);
+
+	SeekBufToBegin(tmp_buf);
+
+	return tmp_buf;
 }
 
 // Calculation of HMAC (MD5)
@@ -387,7 +469,7 @@ void MdProcess(MD *md, void *dest, void *src, UINT size)
 		return;
 	}
 
-	HMAC_Init(md->Ctx, NULL, 0, NULL);
+	HMAC_Init_ex(md->Ctx, NULL, 0, NULL, NULL);
 	HMAC_Update(md->Ctx, src, size);
 
 	r = 0;
@@ -403,7 +485,7 @@ void SetMdKey(MD *md, void *key, UINT key_size)
 		return;
 	}
 
-	HMAC_Init(md->Ctx, key, key_size, md->Md);
+	HMAC_Init_ex(md->Ctx, key, key_size, (const EVP_MD *)md->Md, NULL);
 }
 
 // Creating a message digest object
@@ -419,17 +501,21 @@ MD *NewMd(char *name)
 	m = ZeroMalloc(sizeof(MD));
 
 	StrCpy(m->Name, sizeof(m->Name), name);
-	m->Md = EVP_get_digestbyname(name);
+	m->Md = (const struct evp_md_st *)EVP_get_digestbyname(name);
 	if (m->Md == NULL)
 	{
 		FreeMd(m);
 		return NULL;
 	}
 
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	m->Ctx = HMAC_CTX_new();
+#else
 	m->Ctx = ZeroMalloc(sizeof(struct hmac_ctx_st));
 	HMAC_CTX_init(m->Ctx);
+#endif
 
-	m->Size = EVP_MD_size(m->Md);
+	m->Size = EVP_MD_size((const EVP_MD *)m->Md);
 
 	return m;
 }
@@ -445,8 +531,12 @@ void FreeMd(MD *md)
 
 	if (md->Ctx != NULL)
 	{
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+		HMAC_CTX_free(md->Ctx);
+#else
 		HMAC_CTX_cleanup(md->Ctx);
 		Free(md->Ctx);
+#endif
 	}
 
 	Free(md);
@@ -481,8 +571,12 @@ CIPHER *NewCipher(char *name)
 		return NULL;
 	}
 
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	c->Ctx = EVP_CIPHER_CTX_new();
+#else
 	c->Ctx = ZeroMalloc(sizeof(struct evp_cipher_ctx_st));
 	EVP_CIPHER_CTX_init(c->Ctx);
+#endif
 
 	c->BlockSize = EVP_CIPHER_block_size(c->Cipher);
 	c->KeySize = EVP_CIPHER_key_length(c->Cipher);
@@ -559,180 +653,15 @@ void FreeCipher(CIPHER *c)
 
 	if (c->Ctx != NULL)
 	{
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+		EVP_CIPHER_CTX_free(c->Ctx);
+#else
 		EVP_CIPHER_CTX_cleanup(c->Ctx);
 		Free(c->Ctx);
+#endif
 	}
 
 	Free(c);
-}
-
-// Verify whether the certificate is disabled by CRL in a particular directory
-bool IsXRevoked(X *x)
-{
-	char dirname[MAX_PATH];
-	UINT i;
-	bool ret = false;
-	DIRLIST *t;
-	// Validate arguments
-	if (x == NULL)
-	{
-		return false;
-	}
-
-	GetExeDir(dirname, sizeof(dirname));
-
-	// Search the CRL file
-	t = EnumDir(dirname);
-
-	for (i = 0;i < t->NumFiles;i++)
-	{
-		char *name = t->File[i]->FileName;
-		if (t->File[i]->Folder == false)
-		{
-			if (EndWith(name, ".crl"))
-			{
-				char filename[MAX_PATH];
-				X_CRL *r;
-
-				ConbinePath(filename, sizeof(filename), dirname, name);
-
-				r = FileToXCrl(filename);
-
-				if (r != NULL)
-				{
-					if (IsXRevokedByXCrl(x, r))
-					{
-						ret = true;
-					}
-
-					FreeXCrl(r);
-				}
-			}
-		}
-	}
-
-	FreeDir(t);
-
-	return ret;
-}
-
-// Verify whether the certificate is disabled by the CRL
-bool IsXRevokedByXCrl(X *x, X_CRL *r)
-{
-#ifdef	OS_WIN32
-	X509_REVOKED tmp;
-	X509_CRL_INFO *info;
-	int index;
-	// Validate arguments
-	if (x == NULL || r == NULL)
-	{
-		return false;
-	}
-
-	Zero(&tmp, sizeof(tmp));
-	tmp.serialNumber = X509_get_serialNumber(x->x509);
-
-	info = r->Crl->crl;
-
-	if (sk_X509_REVOKED_is_sorted(info->revoked) == false)
-	{
-		sk_X509_REVOKED_sort(info->revoked);
-	}
-
-	index = sk_X509_REVOKED_find(info->revoked, &tmp);
-
-	if (index < 0)
-	{
-		return false;
-	}
-	else
-	{
-		return true;
-	}
-#else	// OS_WIN32
-	return false;
-#endif	// OS_WIN32
-}
-
-// Release of the CRL
-void FreeXCrl(X_CRL *r)
-{
-	// Validate arguments
-	if (r == NULL)
-	{
-		return;
-	}
-
-	X509_CRL_free(r->Crl);
-
-	Free(r);
-}
-
-// Convert a file to a CRL
-X_CRL *FileToXCrl(char *filename)
-{
-	wchar_t *filename_w = CopyStrToUni(filename);
-	X_CRL *ret = FileToXCrlW(filename_w);
-
-	Free(filename_w);
-
-	return ret;
-}
-X_CRL *FileToXCrlW(wchar_t *filename)
-{
-	BUF *b;
-	X_CRL *r;
-	// Validate arguments
-	if (filename == NULL)
-	{
-		return NULL;
-	}
-
-	b = ReadDumpW(filename);
-	if (b == NULL)
-	{
-		return NULL;
-	}
-
-	r = BufToXCrl(b);
-
-	FreeBuf(b);
-
-	return r;
-}
-
-// Convert the buffer to the CRL
-X_CRL *BufToXCrl(BUF *b)
-{
-	X_CRL *r;
-	X509_CRL *x509crl;
-	BIO *bio;
-	// Validate arguments
-	if (b == NULL)
-	{
-		return NULL;
-	}
-
-	bio = BufToBio(b);
-	if (bio == NULL)
-	{
-		return NULL;
-	}
-
-	x509crl	= NULL;
-
-	if (d2i_X509_CRL_bio(bio, &x509crl) == NULL || x509crl == NULL)
-	{
-		FreeBio(bio);
-		return NULL;
-	}
-
-	r = ZeroMalloc(sizeof(X_CRL));
-	r->Crl = x509crl;
-
-	FreeBio(bio);
-
-	return r;
 }
 
 // Convert the buffer to the public key
@@ -741,6 +670,9 @@ K *RsaBinToPublic(void *data, UINT size)
 	RSA *rsa;
 	K *k;
 	BIO *bio;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	BIGNUM *e, *n;
+#endif
 	// Validate arguments
 	if (data == NULL || size < 4)
 	{
@@ -749,6 +681,14 @@ K *RsaBinToPublic(void *data, UINT size)
 
 	rsa = RSA_new();
 
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	e = BN_new();
+	BN_set_word(e, RSA_F4);
+
+	n = BinToBigNum(data, size);
+
+	RSA_set0_key(rsa, n, e, NULL);
+#else
 	if (rsa->e != NULL)
 	{
 		BN_free(rsa->e);
@@ -763,6 +703,7 @@ K *RsaBinToPublic(void *data, UINT size)
 	}
 
 	rsa->n = BinToBigNum(data, size);
+#endif
 
 	bio = NewBio();
 	Lock(openssl_lock);
@@ -783,14 +724,39 @@ K *RsaBinToPublic(void *data, UINT size)
 BUF *RsaPublicToBuf(K *k)
 {
 	BUF *b;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	RSA *rsa;
+	const BIGNUM *n;
+#endif
 	// Validate arguments
-	if (k == NULL || k->pkey == NULL || k->pkey->pkey.rsa == NULL
-		|| k->pkey->pkey.rsa->n == NULL)
+	if (k == NULL || k->pkey == NULL)
+	{
+		return NULL;
+	}
+
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	rsa = EVP_PKEY_get0_RSA(k->pkey);
+	if (rsa == NULL)
+	{
+		return NULL;
+	}
+
+	RSA_get0_key(rsa, &n, NULL, NULL);
+	if (n == NULL)
+	{
+		return NULL;
+	}
+
+	b = BigNumToBuf(n);
+#else
+	if (k->pkey->pkey.rsa == NULL || k->pkey->pkey.rsa->n == NULL)
 	{
 		return NULL;
 	}
 
 	b = BigNumToBuf(k->pkey->pkey.rsa->n);
+#endif
+
 	if (b == NULL)
 	{
 		return NULL;
@@ -804,13 +770,12 @@ void RsaPublicToBin(K *k, void *data)
 {
 	BUF *b;
 	// Validate arguments
-	if (k == NULL || k->pkey == NULL || k->pkey->pkey.rsa == NULL
-		|| k->pkey->pkey.rsa->n == NULL || data == NULL)
+	if (data == NULL)
 	{
 		return;
 	}
 
-	b = BigNumToBuf(k->pkey->pkey.rsa->n);
+	b = RsaPublicToBuf(k);
 	if (b == NULL)
 	{
 		return;
@@ -826,14 +791,8 @@ UINT RsaPublicSize(K *k)
 {
 	BUF *b;
 	UINT ret;
-	// Validate arguments
-	if (k == NULL || k->pkey == NULL || k->pkey->pkey.rsa == NULL
-		|| k->pkey->pkey.rsa->n == NULL)
-	{
-		return 0;
-	}
 
-	b = BigNumToBuf(k->pkey->pkey.rsa->n);
+	b = RsaPublicToBuf(k);
 	if (b == NULL)
 	{
 		return 0;
@@ -947,7 +906,7 @@ BIGNUM *BufToBigNum(BUF *b)
 }
 
 // Convert a BIGNUM to a buffer
-BUF *BigNumToBuf(BIGNUM *bn)
+BUF *BigNumToBuf(const BIGNUM *bn)
 {
 	UINT size;
 	UCHAR *tmp;
@@ -1748,6 +1707,40 @@ UINT GetDaysUntil2038()
 		return (UINT)((target - now) / (UINT64)(1000 * 60 * 60 * 24));
 	}
 }
+UINT GetDaysUntil2038Ex()
+{
+	SYSTEMTIME now;
+
+	Zero(&now, sizeof(now));
+	SystemTime(&now);
+
+	if (now.wYear >= 2030)
+	{
+		UINT64 now = SystemTime64();
+		UINT64 target;
+		SYSTEMTIME st;
+
+		Zero(&st, sizeof(st));
+		st.wYear = 2049;
+		st.wMonth = 12;
+		st.wDay = 30;
+
+		target = SystemToUINT64(&st);
+
+		if (now >= target)
+		{
+			return 0;
+		}
+		else
+		{
+			return (UINT)((target - now) / (UINT64)(1000 * 60 * 60 * 24));
+		}
+	}
+	else
+	{
+		return GetDaysUntil2038();
+	}
+}
 
 // Issue an X509 certificate
 X *NewX(K *pub, K *priv, X *ca, NAME *name, UINT days, X_SERIAL *serial)
@@ -1886,6 +1879,7 @@ X509 *NewX509(K *pub, K *priv, X *ca, NAME *name, UINT days, X_SERIAL *serial)
 	X509_EXTENSION *ex = NULL;
 	X509_EXTENSION *eku = NULL;
 	X509_EXTENSION *busage = NULL;
+	ASN1_INTEGER *s;
 	// Validate arguments
 	if (pub == NULL || name == NULL || ca == NULL)
 	{
@@ -1948,19 +1942,17 @@ X509 *NewX509(K *pub, K *priv, X *ca, NAME *name, UINT days, X_SERIAL *serial)
 	FreeX509Name(subject_name);
 
 	// Set the Serial Number
+	s = X509_get_serialNumber(x509);
+	OPENSSL_free(s->data);
 	if (serial == NULL)
 	{
 		char zero = 0;
-		ASN1_INTEGER *s = x509->cert_info->serialNumber;
-		OPENSSL_free(s->data);
 		s->data = OPENSSL_malloc(sizeof(char));
 		Copy(s->data, &zero, sizeof(char));
 		s->length = sizeof(char);
 	}
 	else
 	{
-		ASN1_INTEGER *s = x509->cert_info->serialNumber;
-		OPENSSL_free(s->data);
 		s->data = OPENSSL_malloc(serial->size);
 		Copy(s->data, serial->data, serial->size);
 		s->length = serial->size;
@@ -2013,6 +2005,7 @@ X509 *NewRootX509(K *pub, K *priv, NAME *name, UINT days, X_SERIAL *serial)
 	X509_EXTENSION *ex = NULL;
 	X509_EXTENSION *eku = NULL;
 	X509_EXTENSION *busage = NULL;
+	ASN1_INTEGER *s;
 	// Validate arguments
 	if (pub == NULL || name == NULL || priv == NULL)
 	{
@@ -2080,19 +2073,17 @@ X509 *NewRootX509(K *pub, K *priv, NAME *name, UINT days, X_SERIAL *serial)
 	FreeX509Name(issuer_name);
 
 	// Set a Serial Number
+	s = X509_get_serialNumber(x509);
+	OPENSSL_free(s->data);
 	if (serial == NULL)
 	{
 		char zero = 0;
-		ASN1_INTEGER *s = x509->cert_info->serialNumber;
-		OPENSSL_free(s->data);
 		s->data = OPENSSL_malloc(sizeof(char));
 		Copy(s->data, &zero, sizeof(char));
 		s->length = sizeof(char);
 	}
 	else
 	{
-		ASN1_INTEGER *s = x509->cert_info->serialNumber;
-		OPENSSL_free(s->data);
 		s->data = OPENSSL_malloc(serial->size);
 		Copy(s->data, serial->data, serial->size);
 		s->length = serial->size;
@@ -2166,6 +2157,7 @@ bool AddX509Name(void *xn, int nid, wchar_t *str)
 	X509_NAME *x509_name;
 	UINT utf8_size;
 	BYTE *utf8;
+	int encoding_type = MBSTRING_ASC;
 	// Validate arguments
 	if (xn == NULL || str == NULL)
 	{
@@ -2182,11 +2174,16 @@ bool AddX509Name(void *xn, int nid, wchar_t *str)
 	UniToUtf8(utf8, utf8_size, str);
 	utf8[utf8_size] = 0;
 
+	if (StrLen(utf8) != UniStrLen(str))
+	{
+		encoding_type = MBSTRING_UTF8;
+	}
+
 	// Adding
 	x509_name = (X509_NAME *)xn;
 	Lock(openssl_lock);
 	{
-		X509_NAME_add_entry_by_NID(x509_name, nid, MBSTRING_ASC, utf8, utf8_size, -1, 0);
+		X509_NAME_add_entry_by_NID(x509_name, nid, encoding_type, utf8, utf8_size, -1, 0);
 	}
 	Unlock(openssl_lock);
 	Free(utf8);
@@ -2284,8 +2281,8 @@ void LoadXDates(X *x)
 		return;
 	}
 
-	x->notBefore = Asn1TimeToUINT64(x->x509->cert_info->validity->notBefore);
-	x->notAfter = Asn1TimeToUINT64(x->x509->cert_info->validity->notAfter);
+	x->notBefore = Asn1TimeToUINT64((ASN1_TIME *)X509_get0_notBefore(x->x509));
+	x->notAfter = Asn1TimeToUINT64((ASN1_TIME *)X509_get0_notAfter(x->x509));
 }
 
 // Convert the 64bit system time to ASN1 time
@@ -2437,6 +2434,7 @@ bool RsaVerify(void *data, UINT data_size, void *sign, K *k)
 {
 	return RsaVerifyEx(data, data_size, sign, k, 0);
 }
+
 bool RsaVerifyEx(void *data, UINT data_size, void *sign, K *k, UINT bits)
 {
 	UCHAR hash_data[SIGN_HASH_SIZE];
@@ -2458,7 +2456,7 @@ bool RsaVerifyEx(void *data, UINT data_size, void *sign, K *k, UINT bits)
 	}
 
 	// Decode the signature
-	if (RSA_public_decrypt(bits / 8, sign, decrypt_data, k->pkey->pkey.rsa, RSA_PKCS1_PADDING) <= 0)
+	if (RSA_public_decrypt(bits / 8, sign, decrypt_data, EVP_PKEY_get0_RSA(k->pkey), RSA_PKCS1_PADDING) <= 0)
 	{
 		return false;
 	}
@@ -2481,7 +2479,7 @@ bool RsaSignEx(void *dst, void *src, UINT size, K *k, UINT bits)
 {
 	UCHAR hash[SIGN_HASH_SIZE];
 	// Validate arguments
-	if (dst == NULL || src == NULL || k == NULL || k->pkey->type != EVP_PKEY_RSA)
+	if (dst == NULL || src == NULL || k == NULL || EVP_PKEY_base_id(k->pkey) != EVP_PKEY_RSA)
 	{
 		return false;
 	}
@@ -2499,7 +2497,7 @@ bool RsaSignEx(void *dst, void *src, UINT size, K *k, UINT bits)
 	}
 
 	// Signature
-	if (RSA_private_encrypt(sizeof(hash), hash, dst, k->pkey->pkey.rsa, RSA_PKCS1_PADDING) <= 0)
+	if (RSA_private_encrypt(sizeof(hash), hash, dst, EVP_PKEY_get0_RSA(k->pkey), RSA_PKCS1_PADDING) <= 0)
 	{
 		return false;
 	}
@@ -2545,7 +2543,7 @@ bool RsaPublicDecrypt(void *dst, void *src, UINT size, K *k)
 	tmp = ZeroMalloc(size);
 	Lock(openssl_lock);
 	{
-		ret = RSA_public_decrypt(size, src, tmp, k->pkey->pkey.rsa, RSA_NO_PADDING);
+		ret = RSA_public_decrypt(size, src, tmp, EVP_PKEY_get0_RSA(k->pkey), RSA_NO_PADDING);
 	}
 	Unlock(openssl_lock);
 	if (ret <= 0)
@@ -2576,7 +2574,7 @@ bool RsaPrivateEncrypt(void *dst, void *src, UINT size, K *k)
 	tmp = ZeroMalloc(size);
 	Lock(openssl_lock);
 	{
-		ret = RSA_private_encrypt(size, src, tmp, k->pkey->pkey.rsa, RSA_NO_PADDING);
+		ret = RSA_private_encrypt(size, src, tmp, EVP_PKEY_get0_RSA(k->pkey), RSA_NO_PADDING);
 	}
 	Unlock(openssl_lock);
 	if (ret <= 0)
@@ -2607,7 +2605,7 @@ bool RsaPrivateDecrypt(void *dst, void *src, UINT size, K *k)
 	tmp = ZeroMalloc(size);
 	Lock(openssl_lock);
 	{
-		ret = RSA_private_decrypt(size, src, tmp, k->pkey->pkey.rsa, RSA_NO_PADDING);
+		ret = RSA_private_decrypt(size, src, tmp, EVP_PKEY_get0_RSA(k->pkey), RSA_NO_PADDING);
 	}
 	Unlock(openssl_lock);
 	if (ret <= 0)
@@ -2635,7 +2633,7 @@ bool RsaPublicEncrypt(void *dst, void *src, UINT size, K *k)
 	tmp = ZeroMalloc(size);
 	Lock(openssl_lock);
 	{
-		ret = RSA_public_encrypt(size, src, tmp, k->pkey->pkey.rsa, RSA_NO_PADDING);
+		ret = RSA_public_encrypt(size, src, tmp, EVP_PKEY_get0_RSA(k->pkey), RSA_NO_PADDING);
 	}
 	Unlock(openssl_lock);
 	if (ret <= 0)
@@ -3813,6 +3811,7 @@ X *X509ToX(X509 *x509)
 	BUF *b;
 	UINT size;
 	UINT type;
+	ASN1_INTEGER *s;
 	// Validate arguments
 	if (x509 == NULL)
 	{
@@ -3880,8 +3879,8 @@ X *X509ToX(X509 *x509)
 	}
 
 	// Get the Serial Number
-	x->serial = NewXSerial(x509->cert_info->serialNumber->data,
-		x509->cert_info->serialNumber->length);
+	s = X509_get_serialNumber(x509);
+	x->serial = NewXSerial(s->data, s->length);
 	if (x->serial == NULL)
 	{
 		char zero = 0;
@@ -3898,17 +3897,29 @@ X *X509ToX(X509 *x509)
 	b = KToBuf(k, false, NULL);
 
 	size = b->Size;
-	type = k->pkey->type;
+	type = EVP_PKEY_base_id(k->pkey);
 
 	FreeBuf(b);
-
+	
+	//Fixed to get actual RSA key bits
+	x->bits = EVP_PKEY_bits(k->pkey);
+	
 	FreeK(k);
 
 	if (type == EVP_PKEY_RSA)
 	{
 		x->is_compatible_bit = true;
 
-		switch (size)
+		if(x->bits != 1024 && x->bits != 1536 && x->bits != 2048 && x->bits != 3072 && x->bits != 4096)
+		{
+			x->is_compatible_bit = false;
+		}
+		else
+		{
+			x->is_compatible_bit = true;
+		}
+		
+		/*switch (size)
 		{
 		case 162:
 			x->bits = 1024;
@@ -3933,7 +3944,7 @@ X *X509ToX(X509 *x509)
 		default:
 			x->is_compatible_bit = false;
 			break;
-		}
+		}*/
 	}
 
 	return x;
@@ -3970,7 +3981,7 @@ BUF *BioToBuf(BIO *bio)
 	}
 
 	BIO_seek(bio, 0);
-	size = bio->num_write;
+	size = (UINT)BIO_number_written(bio);
 	tmp = Malloc(size);
 	BIO_read(bio, tmp, size);
 
@@ -4090,7 +4101,7 @@ void InitCryptLibrary()
 	SSL_library_init();
 	//OpenSSL_add_all_algorithms();
 	OpenSSL_add_all_ciphers();
-	SSLeay_add_all_digests();
+	OpenSSL_add_all_digests();
 	ERR_load_crypto_strings();
 	SSL_load_error_strings();
 
@@ -4158,7 +4169,7 @@ void Hash(void *dst, void *src, UINT size, bool sha)
 	else
 	{
 		// SHA hash
-		SHA(src, size, dst);
+		Internal_SHA0(src, size, dst);
 	}
 }
 
@@ -4248,6 +4259,33 @@ void Encrypt(CRYPT *c, void *dst, void *src, UINT size)
 }
 
 // SHA-1 hash
+void Sha(UINT sha_type, void *dst, void *src, UINT size)
+{
+	// Validate arguments
+	if (dst == NULL || src == NULL)
+	{
+		return;
+	}
+
+	switch(sha_type) {
+	case SHA1_160:
+		SHA1(src, size, dst);
+		break;
+	case SHA2_256:
+		SHA256(src, size, dst);
+		break;
+	case SHA2_384:
+		SHA384(src, size, dst);
+		break;
+	case SHA2_512:
+		SHA512(src, size, dst);
+		break;
+	}
+
+}
+
+
+// SHA-1 hash
 void Sha1(void *dst, void *src, UINT size)
 {
 	// Validate arguments
@@ -4257,6 +4295,20 @@ void Sha1(void *dst, void *src, UINT size)
 	}
 
 	SHA1(src, size, dst);
+}
+
+void Sha1__(void *dst, void *src, UINT size) {
+	Sha(SHA1_160, dst, src, size);
+}
+
+void Sha2_256(void *dst, void *src, UINT size) {
+	Sha(SHA2_256, dst, src, size);
+}
+void Sha2_384(void *dst, void *src, UINT size) {
+	Sha(SHA2_384, dst, src, size);
+}
+void Sha2_512(void *dst, void *src, UINT size) {
+	Sha(SHA2_512, dst, src, size);
 }
 
 // MD5 hash
@@ -4809,6 +4861,22 @@ bool DhCompute(DH_CTX *dh, void *dst_priv_key, void *src_pub_key, UINT key_size)
 	return ret;
 }
 
+// Creating a DH 2048bit
+DH_CTX *DhNew2048()
+{
+	return DhNew(DH_SET_2048, 2);
+}
+// Creating a DH 3072bit
+DH_CTX *DhNew3072()
+{
+	return DhNew(DH_SET_3072, 2);
+}
+// Creating a DH 4096bit
+DH_CTX *DhNew4096()
+{
+	return DhNew(DH_SET_4096, 2);
+}
+
 // Creating a DH GROUP1
 DH_CTX *DhNewGroup1()
 {
@@ -4863,6 +4931,10 @@ DH_CTX *DhNew(char *prime, UINT g)
 {
 	DH_CTX *dh;
 	BUF *buf;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	BIGNUM *dhp, *dhg;
+	const BIGNUM *pub, *priv;
+#endif
 	// Validate arguments
 	if (prime == NULL || g == 0)
 	{
@@ -4874,14 +4946,27 @@ DH_CTX *DhNew(char *prime, UINT g)
 	dh = ZeroMalloc(sizeof(DH_CTX));
 
 	dh->dh = DH_new();
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	dhp = BinToBigNum(buf->Buf, buf->Size);
+	dhg = BN_new();
+	BN_set_word(dhg, g);
+	DH_set0_pqg(dh->dh, dhp, NULL, dhg);
+#else
 	dh->dh->p = BinToBigNum(buf->Buf, buf->Size);
 	dh->dh->g = BN_new();
 	BN_set_word(dh->dh->g, g);
+#endif
 
 	DH_generate_key(dh->dh);
 
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+	DH_get0_key(dh->dh, &pub, &priv);
+	dh->MyPublicKey = BigNumToBuf(pub);
+	dh->MyPrivateKey = BigNumToBuf(priv);
+#else
 	dh->MyPublicKey = BigNumToBuf(dh->dh->pub_key);
 	dh->MyPrivateKey = BigNumToBuf(dh->dh->priv_key);
+#endif
 
 	dh->Size = buf->Size;
 
@@ -4907,6 +4992,319 @@ void DhFree(DH_CTX *dh)
 	Free(dh);
 }
 
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/
+/////////////////////////
+// SHA0 implementation //
+/////////////////////////
+// 
+// From: https://bitbucket.org/Polarina/ampheck/src/097585ce2a74/src/
+/*
+	Copyright (C) 2009  Gabriel A. Petursson
+	
+	This program is free software: you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
+	
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
+	
+	You should have received a copy of the GNU General Public License
+	along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+struct ampheck_sha0
+{
+	UINT h[5];
+	UCHAR buffer[64];
+	UINT64 length;
+};
+#define ROR(x, y) (((x) >> (y)) ^ ((x) << ((sizeof(x) * 8) - (y))))
+#define ROL(x, y) (((x) << (y)) ^ ((x) >> ((sizeof(x) * 8) - (y))))
+#define UNPACK_32_BE(x, str) { \
+	*((str))     = (UCHAR) ((x) >> 24); \
+	*((str) + 1) = (UCHAR) ((x) >> 16); \
+	*((str) + 2) = (UCHAR) ((x) >>  8); \
+	*((str) + 3) = (UCHAR) (x); \
+}
+#define UNPACK_64_BE(x, str) { \
+	*((str))     = (UCHAR) ((x) >> 56); \
+	*((str) + 1) = (UCHAR) ((x) >> 48); \
+	*((str) + 2) = (UCHAR) ((x) >> 40); \
+	*((str) + 3) = (UCHAR) ((x) >> 32); \
+	*((str) + 4) = (UCHAR) ((x) >> 24); \
+	*((str) + 5) = (UCHAR) ((x) >> 16); \
+	*((str) + 6) = (UCHAR) ((x) >>  8); \
+	*((str) + 7) = (UCHAR) (x); \
+}
+#define PACK_32_BE(str, x) { \
+	*(x) = ((UINT) *((str)    ) << 24) \
+	^ ((UINT) *((str) + 1) << 16) \
+	^ ((UINT) *((str) + 2) <<  8) \
+	^ ((UINT) *((str) + 3)); \
+}
+#define PACK_64_BE(str, x) { \
+	*(x) = ((UINT64) *((str)    ) << 56) \
+	^ ((UINT64) *((str) + 1) << 48) \
+	^ ((UINT64) *((str) + 2) << 40) \
+	^ ((UINT64) *((str) + 3) << 32) \
+	^ ((UINT64) *((str) + 4) << 24) \
+	^ ((UINT64) *((str) + 5) << 16) \
+	^ ((UINT64) *((str) + 6) << 8) \
+	^ ((UINT64) *((str) + 7)); \
+}
+#define UNPACK_32_LE(x, str) { \
+	*((str))     = (UCHAR) (x); \
+	*((str) + 1) = (UCHAR) ((x) >>  8); \
+	*((str) + 2) = (UCHAR) ((x) >> 16); \
+	*((str) + 3) = (UCHAR) ((x) >> 24); \
+}
+#define UNPACK_64_LE(x, str) { \
+	*((str))     = (UCHAR) (x); \
+	*((str) + 1) = (UCHAR) ((x) >>  8); \
+	*((str) + 2) = (UCHAR) ((x) >> 16); \
+	*((str) + 3) = (UCHAR) ((x) >> 24); \
+	*((str) + 4) = (UCHAR) ((x) >> 32); \
+	*((str) + 5) = (UCHAR) ((x) >> 40); \
+	*((str) + 6) = (UCHAR) ((x) >> 48); \
+	*((str) + 7) = (UCHAR) ((x) >> 56); \
+}
+#define PACK_32_LE(str, x) { \
+	*(x) = ((UINT) *((str)    )) \
+	^ ((UINT) *((str) + 1) <<  8) \
+	^ ((UINT) *((str) + 2) << 16) \
+	^ ((UINT) *((str) + 3) << 24); \
+}
+#define PACK_64_LE(str, x) { \
+	*(x) = ((UINT64) *((str)    )) \
+	^ ((UINT64) *((str) + 1) <<  8) \
+	^ ((UINT64) *((str) + 2) << 16) \
+	^ ((UINT64) *((str) + 3) << 24) \
+	^ ((UINT64) *((str) + 4) << 32) \
+	^ ((UINT64) *((str) + 5) << 40) \
+	^ ((UINT64) *((str) + 6) << 48) \
+	^ ((UINT64) *((str) + 7) << 56); \
+}
+#define SHA0_R1(x, y, z) ((z ^ (x & (y ^ z)))       + 0x5a827999)
+#define SHA0_R2(x, y, z) ((x ^ y ^ z)               + 0x6ed9eba1)
+#define SHA0_R3(x, y, z) (((x & y) | (z & (x | y))) + 0x8f1bbcdc)
+#define SHA0_R4(x, y, z) ((x ^ y ^ z)               + 0xca62c1d6)
+#define SHA0_PRC(a, b, c, d, e, idx, rnd) { \
+	wv[e] += ROR(wv[a], 27) + SHA0_R##rnd(wv[b], wv[c], wv[d]) + idx; \
+	wv[b]  = ROR(wv[b], 2); \
+}
+#define SHA0_EXT(i) ( \
+	w[i] ^= w[(i - 3) & 0x0F] ^ w[(i - 8) & 0x0F] ^ w[(i - 14) & 0x0F] \
+	)
+static void ampheck_sha0_init(struct ampheck_sha0 *ctx);
+static void ampheck_sha0_update(struct ampheck_sha0 *ctx, const UCHAR *data, UINT length);
+static void ampheck_sha0_finish(const struct ampheck_sha0 *ctx, UCHAR *digest);
+static void ampheck_sha0_init(struct ampheck_sha0 *ctx)
+{
+	ctx->h[0] = 0x67452301;
+	ctx->h[1] = 0xefcdab89;
+	ctx->h[2] = 0x98badcfe;
+	ctx->h[3] = 0x10325476;
+	ctx->h[4] = 0xc3d2e1f0;
+
+	ctx->length = 0;
+}
+
+static void ampheck_sha0_transform(struct ampheck_sha0 *ctx, const UCHAR *data, UINT blocks)
+{
+	UINT i;
+	for (i = 0; i < blocks; ++i)
+	{
+		UINT wv[5];
+		UINT w[16];
+
+		PACK_32_BE(&data[(i << 6)     ], &w[ 0]);
+		PACK_32_BE(&data[(i << 6) +  4], &w[ 1]);
+		PACK_32_BE(&data[(i << 6) +  8], &w[ 2]);
+		PACK_32_BE(&data[(i << 6) + 12], &w[ 3]);
+		PACK_32_BE(&data[(i << 6) + 16], &w[ 4]);
+		PACK_32_BE(&data[(i << 6) + 20], &w[ 5]);
+		PACK_32_BE(&data[(i << 6) + 24], &w[ 6]);
+		PACK_32_BE(&data[(i << 6) + 28], &w[ 7]);
+		PACK_32_BE(&data[(i << 6) + 32], &w[ 8]);
+		PACK_32_BE(&data[(i << 6) + 36], &w[ 9]);
+		PACK_32_BE(&data[(i << 6) + 40], &w[10]);
+		PACK_32_BE(&data[(i << 6) + 44], &w[11]);
+		PACK_32_BE(&data[(i << 6) + 48], &w[12]);
+		PACK_32_BE(&data[(i << 6) + 52], &w[13]);
+		PACK_32_BE(&data[(i << 6) + 56], &w[14]);
+		PACK_32_BE(&data[(i << 6) + 60], &w[15]);
+
+		wv[0] = ctx->h[0];
+		wv[1] = ctx->h[1];
+		wv[2] = ctx->h[2];
+		wv[3] = ctx->h[3];
+		wv[4] = ctx->h[4];
+
+		SHA0_PRC(0, 1, 2, 3, 4, w[ 0], 1);
+		SHA0_PRC(4, 0, 1, 2, 3, w[ 1], 1);
+		SHA0_PRC(3, 4, 0, 1, 2, w[ 2], 1);
+		SHA0_PRC(2, 3, 4, 0, 1, w[ 3], 1);
+		SHA0_PRC(1, 2, 3, 4, 0, w[ 4], 1);
+		SHA0_PRC(0, 1, 2, 3, 4, w[ 5], 1);
+		SHA0_PRC(4, 0, 1, 2, 3, w[ 6], 1);
+		SHA0_PRC(3, 4, 0, 1, 2, w[ 7], 1);
+		SHA0_PRC(2, 3, 4, 0, 1, w[ 8], 1);
+		SHA0_PRC(1, 2, 3, 4, 0, w[ 9], 1);
+		SHA0_PRC(0, 1, 2, 3, 4, w[10], 1);
+		SHA0_PRC(4, 0, 1, 2, 3, w[11], 1);
+		SHA0_PRC(3, 4, 0, 1, 2, w[12], 1);
+		SHA0_PRC(2, 3, 4, 0, 1, w[13], 1);
+		SHA0_PRC(1, 2, 3, 4, 0, w[14], 1);
+		SHA0_PRC(0, 1, 2, 3, 4, w[15], 1);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 0), 1);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 1), 1);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 2), 1);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 3), 1);
+
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 4), 2);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 5), 2);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 6), 2);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 7), 2);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 8), 2);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 9), 2);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT(10), 2);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT(11), 2);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT(12), 2);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT(13), 2);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT(14), 2);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT(15), 2);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 0), 2);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 1), 2);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 2), 2);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 3), 2);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 4), 2);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 5), 2);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 6), 2);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 7), 2);
+
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 8), 3);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 9), 3);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT(10), 3);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT(11), 3);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT(12), 3);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT(13), 3);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT(14), 3);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT(15), 3);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 0), 3);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 1), 3);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 2), 3);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 3), 3);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 4), 3);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 5), 3);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 6), 3);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 7), 3);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 8), 3);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 9), 3);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT(10), 3);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT(11), 3);
+
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT(12), 4);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT(13), 4);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT(14), 4);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT(15), 4);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 0), 4);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 1), 4);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 2), 4);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 3), 4);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 4), 4);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT( 5), 4);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT( 6), 4);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT( 7), 4);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT( 8), 4);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT( 9), 4);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT(10), 4);
+		SHA0_PRC(0, 1, 2, 3, 4, SHA0_EXT(11), 4);
+		SHA0_PRC(4, 0, 1, 2, 3, SHA0_EXT(12), 4);
+		SHA0_PRC(3, 4, 0, 1, 2, SHA0_EXT(13), 4);
+		SHA0_PRC(2, 3, 4, 0, 1, SHA0_EXT(14), 4);
+		SHA0_PRC(1, 2, 3, 4, 0, SHA0_EXT(15), 4);
+
+		ctx->h[0] += wv[0];
+		ctx->h[1] += wv[1];
+		ctx->h[2] += wv[2];
+		ctx->h[3] += wv[3];
+		ctx->h[4] += wv[4];
+	}
+}
+
+static void ampheck_sha0_update(struct ampheck_sha0 *ctx, const UCHAR *data, UINT size)
+{
+	UINT tmp = size;
+
+	if (size >= 64 - ctx->length % 64)
+	{
+		memcpy(&ctx->buffer[ctx->length % 64], data, 64 - ctx->length % 64);
+
+		data += 64 - ctx->length % 64;
+		size -= 64 - ctx->length % 64;
+
+		ampheck_sha0_transform(ctx, ctx->buffer, 1);
+		ampheck_sha0_transform(ctx, data, size / 64);
+
+		data += size & ~63;
+		size %= 64;
+
+		memcpy(ctx->buffer, data, size);
+	}
+	else
+	{
+		memcpy(&ctx->buffer[ctx->length % 64], data, size);
+	}
+
+	ctx->length += tmp;
+}
+
+static void ampheck_sha0_finish(const struct ampheck_sha0 *ctx, UCHAR *digest)
+{
+	struct ampheck_sha0 tmp;
+
+	memcpy(tmp.h, ctx->h, 5 * sizeof(UINT));
+	memcpy(tmp.buffer, ctx->buffer, ctx->length % 64);
+
+	tmp.buffer[ctx->length % 64] = 0x80;
+
+	if (ctx->length % 64 < 56)
+	{
+		memset(&tmp.buffer[ctx->length % 64 + 1], 0x00, 55 - ctx->length % 64);
+	}
+	else
+	{
+		memset(&tmp.buffer[ctx->length % 64 + 1], 0x00, 63 - ctx->length % 64);
+		ampheck_sha0_transform(&tmp, tmp.buffer, 1);
+
+		memset(tmp.buffer, 0x00, 56);
+	}
+
+	UNPACK_64_BE(ctx->length * 8, &tmp.buffer[56]);
+	ampheck_sha0_transform(&tmp, tmp.buffer, 1);
+
+	UNPACK_32_BE(tmp.h[0], &digest[ 0]);
+	UNPACK_32_BE(tmp.h[1], &digest[ 4]);
+	UNPACK_32_BE(tmp.h[2], &digest[ 8]);
+	UNPACK_32_BE(tmp.h[3], &digest[12]);
+	UNPACK_32_BE(tmp.h[4], &digest[16]);
+}
+static unsigned char *Internal_SHA0(const unsigned char *d, size_t n, unsigned char *md)
+{
+	struct ampheck_sha0 c;
+	static unsigned char m[SHA_DIGEST_LENGTH];
+
+	if (md == NULL) md=m;
+
+	ampheck_sha0_init(&c);
+	ampheck_sha0_update(&c, d, (UINT)n);
+	ampheck_sha0_finish(&c, md);
+
+	return md;
+}
+
+
+
+

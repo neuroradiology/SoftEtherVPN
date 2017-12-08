@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Mayaqua Kernel
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -983,6 +983,24 @@ void Win32DebugAlert(char *msg)
 	MessageBox(NULL, msg, "Debug", MB_SETFOREGROUND | MB_TOPMOST | MB_SERVICE_NOTIFICATION | MB_OK | MB_ICONEXCLAMATION);
 }
 
+// Get the number of CPUs
+UINT Win32GetNumberOfCpuInner()
+{
+	UINT ret = 0;
+	SYSTEM_INFO info;
+
+	Zero(&info, sizeof(info));
+
+	GetSystemInfo(&info);
+
+	if (info.dwNumberOfProcessors >= 1 && info.dwNumberOfProcessors <= 128)
+	{
+		ret = info.dwNumberOfProcessors;
+	}
+
+	return ret;
+}
+
 // Get the OS information
 void Win32GetOsInfo(OS_INFO *info)
 {
@@ -1075,7 +1093,7 @@ bool Win32GetVersionExInternal(void *info)
 		if (os.dwPlatformId == VER_PLATFORM_WIN32_NT)
 		{
 			if ((os.dwMajorVersion == 6 && os.dwMinorVersion >= 2) ||
-				(os.dwMajorVersion == 7))
+				(os.dwMajorVersion >= 7))
 			{
 				// Windows 8 later
 				return Win32GetVersionExInternalForWindows81orLater(info);
@@ -1091,6 +1109,9 @@ bool Win32GetVersionExInternalForWindows81orLater(void *info)
 {
 	OSVERSIONINFOEXA *ex = (OSVERSIONINFOEXA *)info;
 	char *str;
+	UINT major1 = 0, major2 = 0;
+	UINT minor1 = 0, minor2 = 0;
+	UINT major = 0, minor = 0;
 	// Validate arguments
 	if (info == NULL)
 	{
@@ -1120,21 +1141,40 @@ bool Win32GetVersionExInternalForWindows81orLater(void *info)
 
 		if (t != NULL && t->NumTokens == 2)
 		{
-			UINT major = ToInt(t->Token[0]);
-			UINT minor = ToInt(t->Token[1]);
-
-			if (major >= 6)
-			{
-				// Version number acquisition success
-				ex->dwMajorVersion = major;
-				ex->dwMinorVersion = minor;
-			}
+			major1 = ToInt(t->Token[0]);
+			minor1 = ToInt(t->Token[1]);
 		}
 
 		FreeToken(t);
 	}
 
 	Free(str);
+
+	major2 = MsRegReadIntEx2(REG_LOCAL_MACHINE,
+		"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+		"CurrentMajorVersionNumber", false, true);
+
+	minor2 = MsRegReadIntEx2(REG_LOCAL_MACHINE,
+		"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+		"CurrentMinorVersionNumber", false, true);
+
+	if ((major1 * 10000 + minor1) > (major2 * 10000 + minor2))
+	{
+		major = major1;
+		minor = minor1;
+	}
+	else
+	{
+		major = major2;
+		minor = minor2;
+	}
+
+	if (major >= 6)
+	{
+		// Version number acquisition success
+		ex->dwMajorVersion = major;
+		ex->dwMinorVersion = minor;
+	}
 
 	return true;
 }
@@ -1407,7 +1447,7 @@ UINT Win32GetOsType()
 						return OSTYPE_WINDOWS_SERVER_81;
 					}
 				}
-				else if (os.dwMajorVersion == 6 && os.dwMinorVersion == 4)
+				else if ((os.dwMajorVersion == 6 && os.dwMinorVersion == 4) || (os.dwMajorVersion == 10 && os.dwMinorVersion == 0))
 				{
 					if (os.wProductType == VER_NT_WORKSTATION)
 					{
@@ -3500,7 +3540,3 @@ void Win32PrintToFileW(wchar_t *str)
 #endif	// WIN32
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

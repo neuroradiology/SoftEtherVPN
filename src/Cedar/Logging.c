@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -1061,6 +1061,7 @@ bool PacketLog(HUB *hub, SESSION *src_session, SESSION *dest_session, PKT *packe
 	SERVER *s;
 	UINT syslog_setting;
 	bool no_log = false;
+	HUB_OPTION *opt = NULL;
 	// Validate arguments
 	if (hub == NULL || src_session == NULL || packet == NULL)
 	{
@@ -1080,6 +1081,8 @@ bool PacketLog(HUB *hub, SESSION *src_session, SESSION *dest_session, PKT *packe
 	{
 		return true;
 	}
+
+	opt = hub->Option;
 
 	// Determine the logging level
 	level = CalcPacketLoggingLevel(hub, packet);
@@ -1153,6 +1156,21 @@ bool PacketLog(HUB *hub, SESSION *src_session, SESSION *dest_session, PKT *packe
 	else
 	{
 		pl->DestSessionName = CopyStr("");
+	}
+
+	if (opt == NULL || opt->NoPhysicalIPOnPacketLog == false)
+	{
+		if (src_session != NULL && src_session->NormalClient)
+		{
+			StrCpy(pl->SrcPhysicalIP, sizeof(pl->SrcPhysicalIP), src_session->ClientIP);
+		}
+
+		if (dest_session != NULL && dest_session->NormalClient)
+		{
+			StrCpy(pl->DestPhysicalIP, sizeof(pl->DestPhysicalIP), dest_session->ClientIP);
+		}
+
+		pl->WritePhysicalIP = true;
 	}
 
 	if (src_session->LoggingRecordCount != NULL)
@@ -1378,22 +1396,38 @@ char *BuildHttpLogStr(HTTPLOG *h)
 
 	b = NewBuf();
 
-	if (StartWith(h->Path, "http://"))
+	if (StartWith(h->Path, "http://") || StartWith(h->Path, "https://"))
 	{
 		StrCpy(url, sizeof(url), h->Path);
 	}
 	else
 	{
 		// URL generation
-		if (h->Port == 80)
+		if (h->IsSsl == false)
 		{
-			Format(url, sizeof(url), "http://%s%s",
-				h->Hostname, h->Path);
+			if (h->Port == 80)
+			{
+				Format(url, sizeof(url), "http://%s%s",
+					h->Hostname, h->Path);
+			}
+			else
+			{
+				Format(url, sizeof(url), "http://%s:%u%s",
+					h->Hostname, h->Port, h->Path);
+			}
 		}
 		else
 		{
-			Format(url, sizeof(url), "http://%s:%u%s",
-				h->Hostname, h->Port, h->Path);
+			if (h->Port == 443)
+			{
+				Format(url, sizeof(url), "https://%s/",
+					h->Hostname);
+			}
+			else
+			{
+				Format(url, sizeof(url), "https://%s:%u/",
+					h->Hostname, h->Port);
+			}
 		}
 	}
 
@@ -1493,6 +1527,10 @@ char *PacketLogParseProc(RECORD *rec)
 	// Generate each part
 	t = ZeroMalloc(sizeof(TOKEN_LIST));
 	t->NumTokens = 16;
+	if (pl->WritePhysicalIP)
+	{
+		t->NumTokens += 2;
+	}
 	t->Token = ZeroMalloc(sizeof(char *) * t->NumTokens);
 
 	// Source session
@@ -2027,6 +2065,16 @@ char *PacketLogParseProc(RECORD *rec)
 			char *data = Malloc(p->PacketSize * 2 + 1);
 			BinToStr(data, p->PacketSize * 2 + 1, p->PacketData, p->PacketSize);
 			t->Token[15] = data;
+		}
+
+		// Physical IP addresses
+		if (StrLen(pl->SrcPhysicalIP) != 0)
+		{
+			t->Token[16] = CopyStr(pl->SrcPhysicalIP);
+		}
+		if (StrLen(pl->DestPhysicalIP) != 0)
+		{
+			t->Token[17] = CopyStr(pl->DestPhysicalIP);
 		}
 	}
 	else
@@ -2969,7 +3017,3 @@ LOG *NewLog(char *dir, char *prefix, UINT switch_type)
 }
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

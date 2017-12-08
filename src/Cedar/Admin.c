@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Contributors:
 // - ELIN (https://github.com/el1n)
 // Comments: Tetsuo Sugiyama, Ph.D.
@@ -1166,7 +1166,7 @@ UINT StMakeOpenVpnConfigFile(ADMIN *a, RPC_READ_LOG_FILE *t)
 
 				name = NewName(cn, cn, cn, L"US", NULL, NULL);
 
-				dummy_x = NewRootX(dummy_public_k, dummy_private_k, name, MAX(GetDaysUntil2038(), SERVER_DEFAULT_CERT_DAYS), NULL);
+				dummy_x = NewRootX(dummy_public_k, dummy_private_k, name, GetDaysUntil2038Ex(), NULL);
 
 				FreeName(name);
 
@@ -6739,7 +6739,7 @@ UINT StAddCa(ADMIN *a, RPC_HUB_ADD_CA *t)
 
 	if (t->Cert == NULL)
 	{
-		ERR_INVALID_PARAMETER;
+		return ERR_INVALID_PARAMETER;
 	}
 
 	if (t->Cert->is_compatible_bit == false)
@@ -10400,6 +10400,8 @@ void SiEnumLocalLogFileList(SERVER *s, char *hubname, RPC_ENUM_LOG_FILE *t)
 void SiEnumLocalSession(SERVER *s, char *hubname, RPC_ENUM_SESSION *t)
 {
 	HUB *h;
+	UINT64 now = Tick64();
+	UINT64 dormant_interval = 0;
 	// Validate arguments
 	if (s == NULL || hubname == NULL || t == NULL)
 	{
@@ -10415,6 +10417,11 @@ void SiEnumLocalSession(SERVER *s, char *hubname, RPC_ENUM_SESSION *t)
 		t->NumSession = 0;
 		t->Sessions = ZeroMalloc(0);
 		return;
+	}
+
+	if (h->Option != NULL)
+	{
+		dormant_interval = h->Option->DetectDormantSessionInterval * (UINT64)1000;
 	}
 
 	LockList(h->SessionList);
@@ -10453,8 +10460,36 @@ void SiEnumLocalSession(SERVER *s, char *hubname, RPC_ENUM_SESSION *t)
 				e->Client_BridgeMode = s->IsBridgeMode;
 				e->Client_MonitorMode = s->IsMonitorMode;
 				Copy(e->UniqueId, s->NodeInfo.UniqueId, 16);
+
+				if (s->NormalClient)
+				{
+					e->IsDormantEnabled = (dormant_interval == 0 ? false : true);
+					if (e->IsDormantEnabled)
+					{
+						if (s->LastCommTimeForDormant == 0)
+						{
+							e->LastCommDormant = (UINT64)0x7FFFFFFF;
+						}
+						else
+						{
+							e->LastCommDormant = now - s->LastCommTimeForDormant;
+						}
+						if (s->LastCommTimeForDormant == 0)
+						{
+							e->IsDormant = true;
+						}
+						else
+						{
+							if ((s->LastCommTimeForDormant + dormant_interval) < now)
+							{
+								e->IsDormant = true;
+							}
+						}
+					}
+				}
 			}
 			Unlock(s->lock);
+
 			GetMachineName(e->RemoteHostname, sizeof(e->RemoteHostname));
 		}
 	}
@@ -11805,12 +11840,12 @@ void InRpcHubEnumCa(RPC_HUB_ENUM_CA *t, PACK *p)
 void OutRpcHubEnumCa(PACK *p, RPC_HUB_ENUM_CA *t)
 {
 	UINT i;
-	PackAddStr(p, "HubName", t->HubName);
 	// Validate arguments
 	if (t == NULL || p == NULL)
 	{
 		return;
 	}
+	PackAddStr(p, "HubName", t->HubName);
 
 	for (i = 0;i < t->NumCa;i++)
 	{
@@ -12278,12 +12313,12 @@ void InRpcEnumAccessList(RPC_ENUM_ACCESS_LIST *a, PACK *p)
 void OutRpcEnumAccessList(PACK *p, RPC_ENUM_ACCESS_LIST *a)
 {
 	UINT i;
-	PackAddStr(p, "HubName", a->HubName);
 	// Validate arguments
 	if (a == NULL || p == NULL)
 	{
 		return;
 	}
+	PackAddStr(p, "HubName", a->HubName);
 
 	for (i = 0;i < a->NumAccess;i++)
 	{
@@ -12538,12 +12573,12 @@ void InRpcEnumUser(RPC_ENUM_USER *t, PACK *p)
 void OutRpcEnumUser(PACK *p, RPC_ENUM_USER *t)
 {
 	UINT i;
-	PackAddStr(p, "HubName", t->HubName);
 	// Validate arguments
 	if (t == NULL || p == NULL)
 	{
 		return;
 	}
+	PackAddStr(p, "HubName", t->HubName);
 
 	for (i = 0;i < t->NumUser;i++)
 	{
@@ -12744,17 +12779,20 @@ void InRpcEnumSession(RPC_ENUM_SESSION *t, PACK *p)
 		PackGetStrEx(p, "RemoteHostname", e->RemoteHostname, sizeof(e->RemoteHostname), i);
 		e->VLanId = PackGetIntEx(p, "VLanId", i);
 		PackGetDataEx2(p, "UniqueId", e->UniqueId, sizeof(e->UniqueId), i);
+		e->IsDormantEnabled = PackGetBoolEx(p, "IsDormantEnabled", i);
+		e->IsDormant = PackGetBoolEx(p, "IsDormant", i);
+		e->LastCommDormant = PackGetInt64Ex(p, "LastCommDormant", i);
 	}
 }
 void OutRpcEnumSession(PACK *p, RPC_ENUM_SESSION *t)
 {
 	UINT i;
-	PackAddStr(p, "HubName", t->HubName);
 	// Validate arguments
 	if (t == NULL || p == NULL)
 	{
 		return;
 	}
+	PackAddStr(p, "HubName", t->HubName);
 
 	for (i = 0;i < t->NumSession;i++)
 	{
@@ -12778,6 +12816,9 @@ void OutRpcEnumSession(PACK *p, RPC_ENUM_SESSION *t)
 		PackAddBoolEx(p, "Client_MonitorMode", e->Client_MonitorMode, i, t->NumSession);
 		PackAddIntEx(p, "VLanId", e->VLanId, i, t->NumSession);
 		PackAddDataEx(p, "UniqueId", e->UniqueId, sizeof(e->UniqueId), i, t->NumSession);
+		PackAddBoolEx(p, "IsDormantEnabled", e->IsDormantEnabled, i, t->NumSession);
+		PackAddBoolEx(p, "IsDormant", e->IsDormant, i, t->NumSession);
+		PackAddInt64Ex(p, "LastCommDormant", e->LastCommDormant, i, t->NumSession);
 	}
 }
 void FreeRpcEnumSession(RPC_ENUM_SESSION *t)
@@ -13866,7 +13907,3 @@ bool SiIsEmptyPassword(void *hash_password)
 	return false;
 }
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -167,7 +167,12 @@ struct PACKET_ADAPTER
 	PA_PUTPACKET *PutPacket;
 	PA_FREE *Free;
 	void *Param;
+	UINT Id;
 };
+
+// Packet Adapter IDs
+#define	PACKET_ADAPTER_ID_VLAN_WIN32		1
+
 
 // Session structure
 struct SESSION
@@ -188,6 +193,7 @@ struct SESSION
 	bool InProcMode;				// In-process mode
 	THREAD *Thread;					// Management thread
 	CONNECTION *Connection;			// Connection
+	char ClientIP[64];				// Client IP
 	CLIENT_OPTION *ClientOption;	// Client connection options
 	CLIENT_AUTH *ClientAuth;		// Client authentication data
 	volatile bool Halt;				// Halting flag
@@ -228,8 +234,11 @@ struct SESSION
 	UCHAR IpcMacAddress[6];			// MAC address for IPC
 	UCHAR Padding[2];
 
+	IP ServerIP_CacheForNextConnect;	// Server IP, cached for next connect
+
 	UINT64 CreatedTime;				// Creation date and time
 	UINT64 LastCommTime;			// Last communication date and time
+	UINT64 LastCommTimeForDormant;	// Last communication date and time (for dormant)
 	TRAFFIC *Traffic;				// Traffic data
 	TRAFFIC *OldTraffic;			// Old traffic data
 	UINT64 TotalSendSize;			// Total transmitted data size
@@ -260,6 +269,7 @@ struct SESSION
 	UINT64 CurrentConnectionEstablishTime;	// Completion time of this connection
 	UINT NumConnectionsEatablished;	// Number of connections established so far
 	UINT AdjustMss;					// MSS adjustment value
+	bool IsVPNClientAndVLAN_Win32;	// Is the VPN Client session with a VLAN card (Win32)
 
 	bool IsRUDPSession;				// Whether R-UDP session
 	UINT RUdpMss;					// The value of the MSS should be applied while the R-UDP is used
@@ -433,7 +443,3 @@ UINT GetNextDelayedPacketTickDiff(SESSION *s);
 
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/

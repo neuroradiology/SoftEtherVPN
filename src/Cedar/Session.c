@@ -1,17 +1,17 @@
-// SoftEther VPN Source Code
+// SoftEther VPN Source Code - Developer Edition Master Branch
 // Cedar Communication Module
 // 
 // SoftEther VPN Server, Client and Bridge are free software under GPLv2.
 // 
-// Copyright (c) 2012-2014 Daiyuu Nobori.
-// Copyright (c) 2012-2014 SoftEther VPN Project, University of Tsukuba, Japan.
-// Copyright (c) 2012-2014 SoftEther Corporation.
+// Copyright (c) Daiyuu Nobori.
+// Copyright (c) SoftEther VPN Project, University of Tsukuba, Japan.
+// Copyright (c) SoftEther Corporation.
 // 
 // All Rights Reserved.
 // 
 // http://www.softether.org/
 // 
-// Author: Daiyuu Nobori
+// Author: Daiyuu Nobori, Ph.D.
 // Comments: Tetsuo Sugiyama, Ph.D.
 // 
 // This program is free software; you can redistribute it and/or
@@ -144,6 +144,7 @@ void SessionMain(SESSION *s)
 	{
 		return;
 	}
+
 	Debug("SessionMain: %s\n", s->Name);
 
 	Notify(s, CLIENT_NOTIFY_ACCOUNT_CHANGED);
@@ -161,6 +162,19 @@ void SessionMain(SESSION *s)
 	policy = s->Policy;
 
 	// Initialize the packet adapter
+#ifdef	OS_WIN32
+	if (s->IsVPNClientAndVLAN_Win32)
+	{
+		MsBeginVLanCard();
+
+		if (MsIsVLanCardShouldStop())
+		{
+			err = ERR_SUSPENDING;
+			goto CLEANUP;
+		}
+	}
+#endif	// OS_WIN32
+
 	pa = s->PacketAdapter;
 	if (pa->Init(s) == false)
 	{
@@ -305,6 +319,16 @@ void SessionMain(SESSION *s)
 		}
 
 
+		if (is_server_session && s->LinkModeServer == false && s->SecureNATMode == false && s->BridgeMode == false && s->L3SwitchMode == false)
+		{
+			if (s->Hub != NULL && s->Hub->ForceDisableComm)
+			{
+				// Disconnect the session forcibly because the ForceDisableComm flag is set
+				err = ERR_SERVER_CANT_ACCEPT;
+				pa_fail = true;
+			}
+		}
+
 		if (s->InProcMode)
 		{
 			if (c->TubeSock == NULL || IsTubeConnected(c->TubeSock->SendTube) == false || IsTubeConnected(c->TubeSock->RecvTube) == false)
@@ -324,7 +348,6 @@ void SessionMain(SESSION *s)
 				pa_fail = true;
 			}
 		}
-
 		
 		// Chance of additional connection
 		if (is_server_session == false)
@@ -348,6 +371,18 @@ void SessionMain(SESSION *s)
 			err = ERR_DISCONNECTED;
 			pa_fail = true;
 		}
+
+#ifdef	OS_WIN32
+		if (s->IsVPNClientAndVLAN_Win32)
+		{
+			if (MsIsVLanCardShouldStop())
+			{
+				// System is suspending
+				err = ERR_SUSPENDING;
+				pa_fail = true;
+			}
+		}
+#endif	// OS_WIN32
 
 		// Pass the received block to the PacketAdapter
 		if (lock_receive_blocks_queue)
@@ -697,6 +732,13 @@ CLEANUP:
 	{
 		pa->Free(s);
 	}
+
+#ifdef	OS_WIN32
+	if (s->IsVPNClientAndVLAN_Win32)
+	{
+		MsEndVLanCard();
+	}
+#endif	// OS_WIN32
 
 	if (s->ServerMode == false)
 	{
@@ -1409,13 +1451,12 @@ void ClientThread(THREAD *t, void *param)
 	bool no_save_password = false;
 	bool is_vpngate_connection = false;
 	CEDAR *cedar;
+	bool num_active_sessions_incremented = false;
 	// Validate arguments
 	if (t == NULL || param == NULL)
 	{
 		return;
 	}
-
-	CiIncrementNumActiveSessions();
 
 	Debug("ClientThread 0x%x Started.\n", t);
 
@@ -1423,6 +1464,13 @@ void ClientThread(THREAD *t, void *param)
 	AddRef(s->ref);
 	s->Thread = t;
 	AddRef(t->ref);
+
+	if (s->LinkModeClient == false)
+	{
+		CiIncrementNumActiveSessions();
+		num_active_sessions_incremented = true;
+	}
+
 	NoticeThreadInit(t);
 
 	cedar = s->Cedar;
@@ -1444,6 +1492,8 @@ void ClientThread(THREAD *t, void *param)
 
 	while (true)
 	{
+		Zero(&s->ServerIP_CacheForNextConnect, sizeof(IP));
+
 		if (s->Link != NULL && ((*s->Link->StopAllLinkFlag) || s->Link->Halting))
 		{
 			s->Err = ERR_USER_CANCEL;
@@ -1793,7 +1843,10 @@ SKIP:
 
 	ReleaseSession(s);
 
-	CiDecrementNumActiveSessions();
+	if (num_active_sessions_incremented)
+	{
+		CiDecrementNumActiveSessions();
+	}
 }
 
 // Name comparison of sessions
@@ -1954,9 +2007,15 @@ SESSION *NewClientSessionEx(CEDAR *cedar, CLIENT_OPTION *option, CLIENT_AUTH *au
 
 	// Hold whether the virtual LAN card is used in client mode
 	s->ClientModeAndUseVLan = (StrLen(s->ClientOption->DeviceName) == 0) ? false : true;
+
 	if (s->ClientOption->NoRoutingTracking)
 	{
 		s->ClientModeAndUseVLan = false;
+	}
+
+	if (pa->Id == PACKET_ADAPTER_ID_VLAN_WIN32)
+	{
+		s->IsVPNClientAndVLAN_Win32 = true;
 	}
 
 	if (StrLen(option->DeviceName) == 0)
@@ -2209,6 +2268,19 @@ SESSION *NewServerSessionEx(CEDAR *cedar, CONNECTION *c, HUB *h, char *username,
 		{
 			Format(name, sizeof(name), "SID-%s-[%s]-%u", user_name_upper, c->InProcPrefix, Inc(h->SessionCounter));
 		}
+
+		if (h->IsVgsHub || h->IsVgsSuperRelayHub)
+		{
+			UCHAR rand[5];
+			char tmp[32];
+
+			Rand(rand, sizeof(rand));
+
+			BinToStr(tmp, sizeof(tmp), rand, sizeof(rand));
+
+			StrCat(name, sizeof(name), "-");
+			StrCat(name, sizeof(name), tmp);
+		}
 	}
 	else
 	{
@@ -2412,7 +2484,3 @@ void Notify(SESSION *s, UINT code)
 }
 
 
-
-// Developed by SoftEther VPN Project at University of Tsukuba in Japan.
-// Department of Computer Science has dozens of overly-enthusiastic geeks.
-// Join us: http://www.tsukuba.ac.jp/english/admission/
